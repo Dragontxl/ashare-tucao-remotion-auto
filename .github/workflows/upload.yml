@@ -1,0 +1,135 @@
+name: 手动从R2补传B站
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '要上传的交易日 YYYYMMDD（留空=今天，Asia/Shanghai）'
+        required: false
+        default: ''
+      video_title:
+        description: '视频标题（留空=使用文稿标题）'
+        required: false
+        default: ''
+      run_prefix:
+        description: '直接指定 R2 运行前缀（可选，如 ashare-tucao-auto/20261125_092500）'
+        required: false
+        default: ''
+
+  repository_dispatch:
+    types: [ashare-tucao-upload]
+
+concurrency:
+  group: ashare-tucao-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    env:
+      TZ: Asia/Shanghai
+      RUN_DATE: ${{ github.event.client_payload.date || inputs.date || '' }}
+      VIDEO_TITLE: ${{ github.event.client_payload.video_title || inputs.video_title || '' }}
+      RUN_PREFIX: ${{ github.event.client_payload.run_prefix || inputs.run_prefix || '' }}
+      R2_PREFIX: 'ashare-tucao-auto/'
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 安装 Playwright 浏览器
+        run: python -m playwright install --with-deps chromium
+
+      - name: 校验 B站 Cookie 配置
+        shell: bash
+        env:
+          BILIBILI_COOKIES: ${{ secrets.BILIBILI_COOKIES }}
+        run: |
+          if [ -z "$BILIBILI_COOKIES" ]; then
+            echo "::error::未配置 BILIBILI_COOKIES。请在仓库 Settings → Secrets and variables → Actions 中添加。"
+            exit 1
+          fi
+          echo "已配置 B站 Cookie"
+
+      - name: 从R2下载产物并上传B站
+        shell: bash
+        env:
+          BILIBILI_COOKIES: ${{ secrets.BILIBILI_COOKIES }}
+          RUN_DATE: ${{ env.RUN_DATE }}
+          VIDEO_TITLE: ${{ env.VIDEO_TITLE }}
+          RUN_PREFIX: ${{ env.RUN_PREFIX }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PREFIX: ${{ env.R2_PREFIX }}
+        run: |
+          mkdir -p config out
+          cp config/config.example.json config/config.json 2>/dev/null || true
+          printf '%s\n' "$BILIBILI_COOKIES" > config/bilibili_cookies.json
+          python scripts/bili_login.py --check --cookies config/bilibili_cookies.json
+          title_args=()
+          [ -n "$VIDEO_TITLE" ] && title_args+=(--title "$VIDEO_TITLE")
+          prefix_args=()
+          [ -n "$RUN_PREFIX" ] && prefix_args+=(--run-prefix "$RUN_PREFIX")
+          python scripts/upload_from_r2.py --date "$RUN_DATE" "${prefix_args[@]}" "${title_args[@]}"
+
+      - name: 上传上传结果到 R2
+        if: always()
+        env:
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PREFIX: ${{ env.R2_PREFIX }}
+        run: |
+          if [ -z "$R2_BUCKET_NAME" ] || [ -z "$R2_ACCESS_KEY_ID" ]; then
+            echo "未配置 R2，跳过上传"
+            exit 0
+          fi
+          pip install boto3 -q
+          python - <<'PY'
+          import os, datetime
+          from botocore.config import Config
+          import boto3
+          bucket = os.environ['R2_BUCKET_NAME']
+          endpoint = os.environ['R2_ENDPOINT_URL'].rstrip('/')
+          client = boto3.client('s3', endpoint_url=endpoint,
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4',
+                            s3={'addressing_style': 'path'},
+                            retries={'max_attempts': 3, 'mode': 'standard'}))
+          prefix_root = (os.environ.get('R2_PREFIX') or 'ashare-tucao-auto/').strip('/')
+          stamp = datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+          prefix = f'{prefix_root}/{stamp}'
+          for f in ['bilibili_result.json']:
+              src = os.path.join('out', f)
+              if os.path.exists(src):
+                  client.upload_file(src, bucket, f'{prefix}/{f}')
+                  print(f'已上传: {prefix}/{f}')
+          print(f'R2 前缀: {prefix}')
+          PY
+
+      - name: 上传产物（GitHub Artifact）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ashare-tucao-auto-upload-result
+          path: out/bilibili_result.json
+          if-no-files-found: warn

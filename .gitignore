@@ -1,0 +1,54 @@
+# 依赖
+node_modules/
+build/
+__pycache__/
+*.pyc
+
+# 运行时生成物（每次运行覆盖）
+public/charts/*
+public/voiceover.mp3
+src/audio/
+src/market_data/
+src/sentences.json
+src/timeline.json
+src/cover.json
+src/meta.json
+out/*.mp4
+out/*.txt
+out/*.png
+out/*.md
+out/*.json
+out/bilibili_work/
+out/_bundle/
+out/_segments/
+out/_test/
+out/runs/
+stills/
+
+# B站 Cookie（含登录凭据，禁止入库）
+config/bilibili_cookies.json
+
+# 本地真实配置（含 LLM API Key / GitHub PAT / cron-job.org API Key，禁止入库）
+config/config.json
+config/*.local.json
+src/config.json
+
+# 诊断/测试产物
+out/_diag/
+out/_upload_test/
+
+# 保留目录（必须放在忽略规则之后）
+!public/charts/.gitkeep
+!out/.gitkeep
+
+# 系统/编辑器
+.DS_Store
+.env
+.env.*
+*.log
+
+# 说明文档仅保留在本地，不入库（公开仓库不需要）
+README.md
+
+# 股票列表缓存（运行时下载，可过期）
+scripts/data/

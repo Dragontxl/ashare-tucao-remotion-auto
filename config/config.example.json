@@ -1,0 +1,80 @@
+{
+  "_comment": "复制本文件为 config.json 后编辑。article_title / hook_title / date_label / market_mood / ticker / summary 会由流水线根据当日原文自动生成并覆盖。",
+
+  "show_name": "盘面吐槽大会",
+  "episode": "EP.0000",
+  "article_title": "__AUTO__",
+  "hook_title": "__AUTO__",
+  "date_label": "__AUTO__",
+  "market_mood": "__AUTO__",
+  "ticker": "__AUTO__",
+
+  "voice": "zh-CN-YunxiNeural",
+  "rate": "+6%",
+  "gap": 0.18,
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+
+  "index_code": "sh000001",
+  "index_name": "上证指数",
+
+  "stocks": [
+    { "code": "sz002156", "name": "通富微电", "file": "stock_tongfu.png", "label": "" },
+    { "code": "sh603324", "name": "盛剑科技", "file": "stock_shengjian.png", "label": "" },
+    { "code": "sh601398", "name": "工商银行", "file": "stock_icbc.png", "label": "" }
+  ],
+
+  "article": {
+    "base_url": "https://ashare.ldragon.xyz/summary_today/",
+    "pattern": "{date}_summary_today.docx",
+    "retries": 20,
+    "retry_interval": 60
+  },
+
+  "render": {
+    "concurrency": 4,
+    "tab_concurrency": 1,
+    "chunk_frames": 3200,
+    "memory_per_tab_gb": 0.45,
+    "memory_reserve_gb": 0.8
+  },
+
+  "bilibili": {
+    "enabled": true,
+    "cookies_file": "config/bilibili_cookies.json",
+    "headless": true
+  },
+
+  "llm": {
+    "provider": "agnes",
+    "base_url": "https://apihub.agnes-ai.com/v1",
+    "model": "agnes-3.0-flash",
+    "api_key": "",
+    "temperature": 0.9,
+    "timeout": 180
+  },
+
+  "github": {
+    "_comment": "仅本地脚本使用：手动触发 Actions / 写入 Secrets。CI 中不需要写入仓库。",
+    "owner": "Dragontxl",
+    "repo": "ashare-tucao-remotion-auto",
+    "pat": ""
+  },
+
+  "cronjob": {
+    "_comment": "仅本地 scripts/setup_cron.py 使用，CI 中不需要。",
+    "api_key": "",
+    "title": "A股盘面吐槽 17:25 生成并上传B站"
+  },
+
+  "r2": {
+    "_comment": "Cloudflare R2 存储桶，用于归档视频与从 R2 补传 B站。prefix 建议每个项目独立，避免互相覆盖。",
+    "bucket": "your-bucket-name",
+    "access_key_id": "",
+    "secret_access_key": "",
+    "endpoint": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com",
+    "public_url": "",
+    "prefix": "ashare-tucao-auto/"
+  }
+}

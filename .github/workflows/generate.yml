@@ -1,0 +1,285 @@
+name: 生成A股吐槽视频并上传B站
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '交易日 YYYYMMDD（留空=今天，Asia/Shanghai）'
+        required: false
+        default: ''
+      article:
+        description: '自定义原文：URL 或直接粘贴文本（留空=抓当日复盘 docx）'
+        required: false
+        default: ''
+      video_title:
+        description: '视频标题（可选，留空则由大模型生成）'
+        required: false
+        default: ''
+      concurrency:
+        description: '渲染并发 tab 数（按机器内存自动准入，默认 4）'
+        required: false
+        default: '4'
+      force:
+        description: '非交易日也强制运行'
+        required: false
+        type: boolean
+        default: false
+      upload:
+        description: '生成完成后自动上传 B站（默认开启）'
+        required: false
+        type: boolean
+        default: true
+      skip_llm:
+        description: '跳过大模型，使用内置降级文稿'
+        required: false
+        type: boolean
+        default: false
+      upload_only:
+        description: '仅从 R2 下载已有产物并上传 B站（不重新渲染）'
+        required: false
+        type: boolean
+        default: false
+
+  # 兼容其他自动化/Worker 触发；cron-job.org 使用 workflow_dispatch
+  repository_dispatch:
+    types: [ashare-tucao-generation]
+
+concurrency:
+  group: ashare-tucao-auto
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    env:
+      TZ: Asia/Shanghai
+      RUN_DATE: ${{ github.event.client_payload.date || inputs.date || '' }}
+      ARTICLE_INPUT: ${{ github.event.client_payload.article || inputs.article || '' }}
+      VIDEO_TITLE: ${{ github.event.client_payload.video_title || inputs.video_title || '' }}
+      CONCURRENCY: ${{ github.event.client_payload.concurrency || inputs.concurrency || '4' }}
+      FORCE: ${{ github.event.client_payload.force || inputs.force || false }}
+      UPLOAD: ${{ github.event.client_payload.upload || inputs.upload }}
+      SKIP_LLM: ${{ github.event.client_payload.skip_llm || inputs.skip_llm || false }}
+      UPLOAD_ONLY: ${{ github.event.client_payload.upload_only || inputs.upload_only || false }}
+      ARTICLE_RETRIES: '20'
+      ARTICLE_RETRY_INTERVAL: '60'
+      R2_PREFIX: 'ashare-tucao-auto/'
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装系统依赖（ffmpeg + 中文字体）
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk fonts-noto-color-emoji
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装 Python 依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 设置 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 安装 Node 依赖
+        run: npm ci
+
+      - name: 确保 Remotion 浏览器可用
+        if: ${{ env.UPLOAD_ONLY != 'true' }}
+        run: npx remotion browser ensure
+
+      - name: 安装 Playwright 浏览器（上传 B站时需要）
+        if: ${{ env.UPLOAD == 'true' || env.UPLOAD_ONLY == 'true' }}
+        run: python -m playwright install --with-deps chromium
+
+      - name: 准备配置与原文
+        if: ${{ env.UPLOAD_ONLY != 'true' }}
+        shell: bash
+        env:
+          BILI_COOKIES: ${{ secrets.BILIBILI_COOKIES }}
+        run: |
+          mkdir -p input config out public/charts
+          if [ -f config/config.example.json ] && [ ! -f config/config.json ]; then
+            cp config/config.example.json config/config.json
+            echo "已从 config.example.json 复制 config.json"
+          fi
+          if [ "$UPLOAD" = "true" ] && [ -z "$BILI_COOKIES" ]; then
+            echo "::warning::未配置 BILIBILI_COOKIES，本次仍会生成视频并归档 R2，但不会上传 B站。"
+          fi
+          if [ -n "$BILI_COOKIES" ]; then
+            printf '%s\n' "$BILI_COOKIES" > config/bilibili_cookies.json
+            echo "已写入 B站 Cookie"
+          fi
+          if [ -n "$ARTICLE_INPUT" ]; then
+            case "$ARTICLE_INPUT" in
+              http://*|https://*)
+                echo "使用自定义原文 URL：$ARTICLE_INPUT"
+                ;;
+              *)
+                printf '%s' "$ARTICLE_INPUT" > input/article.md
+                echo "使用粘贴原文：$(wc -c < input/article.md) 字节"
+                ;;
+            esac
+          fi
+
+      - name: 预检 B站 Cookie
+        id: bili_check
+        # 预检失败不阻断生成：仍渲染并归档到 R2，只是跳过上传，事后可用「从R2补传」补上
+        continue-on-error: true
+        if: ${{ env.UPLOAD == 'true' && env.UPLOAD_ONLY != 'true' }}
+        env:
+          BILI_COOKIES: ${{ secrets.BILIBILI_COOKIES }}
+        run: |
+          if [ -z "$BILI_COOKIES" ]; then
+            echo "::warning::未配置 BILIBILI_COOKIES，将跳过上传，仅生成视频并归档 R2。"
+            exit 1
+          fi
+          python scripts/bili_login.py --check --cookies config/bilibili_cookies.json
+
+      - name: 仅上传 B站（从 R2 下载已有产物）
+        if: ${{ env.UPLOAD_ONLY == 'true' }}
+        shell: bash
+        env:
+          BILI_COOKIES: ${{ secrets.BILIBILI_COOKIES }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PREFIX: ${{ env.R2_PREFIX }}
+        run: |
+          mkdir -p config out
+          cp config/config.example.json config/config.json 2>/dev/null || true
+          if [ -z "$BILI_COOKIES" ]; then
+            echo "::error::未配置 BILIBILI_COOKIES，无法上传 B站。"
+            exit 1
+          fi
+          printf '%s\n' "$BILI_COOKIES" > config/bilibili_cookies.json
+          python scripts/upload_from_r2.py --date "$RUN_DATE"
+
+      - name: 覆盖视频标题（可选）
+        if: ${{ env.VIDEO_TITLE != '' }}
+        env:
+          VTITLE: ${{ env.VIDEO_TITLE }}
+        run: |
+          python - <<'PY'
+          import json, os
+          p = 'config/config.json'
+          d = json.load(open(p, encoding='utf-8'))
+          d['article_title'] = os.environ['VTITLE']
+          d['hook_title'] = os.environ['VTITLE']
+          json.dump(d, open(p, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+          print('标题已设为', d['article_title'])
+          PY
+
+      - name: 运行全流程
+        if: ${{ env.UPLOAD_ONLY != 'true' }}
+        shell: bash
+        env:
+          AGNES_API_KEY: ${{ secrets.AGNES_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          CHINESE_FONT_PATH: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+          SKIP_LLM: ${{ env.SKIP_LLM }}
+          RUN_DATE: ${{ env.RUN_DATE }}
+          ARTICLE_INPUT: ${{ env.ARTICLE_INPUT }}
+          CONCURRENCY: ${{ env.CONCURRENCY }}
+          FORCE: ${{ env.FORCE }}
+          UPLOAD: ${{ env.UPLOAD }}
+          ARTICLE_RETRIES: ${{ env.ARTICLE_RETRIES }}
+          ARTICLE_RETRY_INTERVAL: ${{ env.ARTICLE_RETRY_INTERVAL }}
+        run: |
+          args=()
+          [ -n "$RUN_DATE" ] && args+=(--date "$RUN_DATE")
+          case "$ARTICLE_INPUT" in
+            http://*|https://*) args+=(--article "$ARTICLE_INPUT") ;;
+            "") ;;
+            *) args+=(--article input/article.md) ;;
+          esac
+          [ "$FORCE" = "true" ] && args+=(--force)
+          # Cookie 预检失败时只生成、不上传（视频与 R2 归档仍然保留）
+          upload="$UPLOAD"
+          if [ "$upload" = "true" ] && [ "${{ steps.bili_check.outcome }}" != "success" ]; then
+            echo "::warning::B站 Cookie 预检未通过，本次跳过上传，仅生成视频并归档 R2。"
+            upload="false"
+          fi
+          [ "$upload" = "true" ] && args+=(--upload)
+          [ -n "$CONCURRENCY" ] && args+=(--concurrency "$CONCURRENCY")
+          [ "$SKIP_LLM" = "true" ] && args+=(--skip-llm)
+          echo "运行参数：${args[*]}"
+          python scripts/run_all.py "${args[@]}"
+
+      - name: 整理产物
+        if: always()
+        run: |
+          mkdir -p artifacts
+          cp out/video_final.mp4 artifacts/ 2>/dev/null || true
+          cp out/cover.png artifacts/ 2>/dev/null || true
+          cp out/B站简介.md artifacts/ 2>/dev/null || true
+          cp out/tags.txt artifacts/ 2>/dev/null || true
+          cp out/bilibili_result.json artifacts/ 2>/dev/null || true
+          cp src/sentences.json artifacts/ 2>/dev/null || true
+          cp src/charts_manifest.json artifacts/ 2>/dev/null || true
+          ls -lh artifacts/ || true
+
+      - name: 上传产物到 R2
+        if: always()
+        env:
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_PREFIX: ${{ env.R2_PREFIX }}
+          UPLOAD_ONLY: ${{ env.UPLOAD_ONLY }}
+        run: |
+          if [ -z "$R2_BUCKET_NAME" ] || [ -z "$R2_ACCESS_KEY_ID" ]; then
+            echo "未配置 R2，跳过上传"
+            exit 0
+          fi
+          pip install boto3 -q
+          python - <<'PY'
+          import os, datetime
+          from botocore.config import Config
+          import boto3
+          bucket = os.environ['R2_BUCKET_NAME']
+          endpoint = os.environ['R2_ENDPOINT_URL'].rstrip('/')
+          client = boto3.client('s3', endpoint_url=endpoint,
+              aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+              aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+              config=Config(signature_version='s3v4',
+                            s3={'addressing_style': 'path'},
+                            retries={'max_attempts': 3, 'mode': 'standard'}))
+          prefix_root = (os.environ.get('R2_PREFIX') or 'ashare-tucao-auto/').strip('/')
+          stamp = datetime.datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+          prefix = f'{prefix_root}/{stamp}'
+          if os.environ.get('UPLOAD_ONLY') == 'true':
+              files_to_upload = ['bilibili_result.json']
+          else:
+              files_to_upload = ['video_final.mp4', 'cover.png', 'B站简介.md', 'tags.txt', 'bilibili_result.json']
+          for f in files_to_upload:
+              src = os.path.join('artifacts', f)
+              if os.path.exists(src):
+                  client.upload_file(src, bucket, f'{prefix}/{f}')
+                  print(f'已上传: {prefix}/{f}')
+          print(f'R2 前缀: {prefix}')
+          PY
+
+      - name: 上传产物（GitHub Artifact）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ashare-tucao-auto-output
+          path: artifacts/
+          if-no-files-found: warn

@@ -1,0 +1,22 @@
+{
+  "name": "ashare-tucao-remotion-auto",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A股盘面吐槽大会（无前台）：cron-job.org 定时触发 GitHub Actions，生成视频并自动上传B站",
+  "scripts": {
+    "compositions": "remotion compositions src/index.ts",
+    "studio": "remotion studio src/index.ts",
+    "render": "python scripts/render_video.py",
+    "pipeline": "python scripts/run_all.py",
+    "pipeline:upload": "python scripts/run_all.py --upload",
+    "trigger": "python scripts/trigger_workflow.py",
+    "cron:setup": "python scripts/setup_cron.py",
+    "bili:refresh": "python scripts/refresh_bili_cookie.py"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.545",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.545"
+  }
+}
