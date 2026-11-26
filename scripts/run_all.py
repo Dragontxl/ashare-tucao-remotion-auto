@@ -68,6 +68,9 @@ def run_script(script, env=None):
 
 def run_upload(date8_str, cfg):
     """调用 B站上传脚本。"""
+    # generate_script.py 在子进程中已把 LLM 生成的标题写回 config.json，
+    # 必须重新加载，否则会用旧的 __AUTO__ 哨兵值作为上传标题。
+    cfg = load_config()
     video = os.path.join(ROOT, "out", "video_final.mp4")
     cover = os.path.join(ROOT, "out", "cover.png")
     if not os.path.exists(video):

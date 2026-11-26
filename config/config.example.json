@@ -3,11 +3,11 @@
 
   "show_name": "盘面吐槽大会",
   "episode": "EP.0000",
-  "article_title": "__AUTO__",
-  "hook_title": "__AUTO__",
-  "date_label": "__AUTO__",
-  "market_mood": "__AUTO__",
-  "ticker": "__AUTO__",
+  "article_title": "",
+  "hook_title": "",
+  "date_label": "",
+  "market_mood": "",
+  "ticker": "",
 
   "voice": "zh-CN-YunxiNeural",
   "rate": "+6%",
